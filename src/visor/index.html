@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor fotogrametría</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --border: #2a2f3a;
+    --text: #e6e8ee; --muted: #9aa3b2; --accent: #4fa3ff; --ok: #3ccf7a; --warn: #ffb648;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 1fr auto; height: 100%; }
+  aside { grid-row: 1 / span 2; background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 16px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .paso { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent; margin-bottom: 6px; }
+  .paso:hover { background: var(--panel2); }
+  .paso.activo { background: var(--panel2); border-color: var(--accent); }
+  .paso.deshabilitado { opacity: .4; cursor: not-allowed; }
+  .num { width: 26px; height: 26px; border-radius: 50%; background: var(--border); display: grid;
+    place-items: center; font-weight: 600; font-size: 12px; flex-shrink: 0; }
+  .paso.activo .num { background: var(--accent); color: #000; }
+  .paso b { display: block; font-size: 13px; }
+  .paso small { color: var(--muted); }
+  #info { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+  #info h2 { font-size: 13px; margin: 0 0 8px; color: var(--accent); }
+  #info p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 3px 0; border-bottom: 1px solid var(--border); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  #vista { position: relative; min-height: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #estado { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,.6); padding: 6px 10px;
+    border-radius: 6px; font-size: 12px; color: var(--muted); pointer-events: none; }
+  #controles { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
+  #controles button { background: rgba(23,26,33,.9); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+  #controles button.on { border-color: var(--accent); color: var(--accent); }
+  #ayuda { position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: var(--muted);
+    background: rgba(0,0,0,.5); padding: 4px 8px; border-radius: 6px; }
+  #tira { grid-column: 2; background: var(--panel); border-top: 1px solid var(--border);
+    display: flex; gap: 8px; padding: 10px; overflow-x: auto; min-height: 0; }
+  #tira:empty { display: none; }
+  .foto { flex: 0 0 auto; width: 150px; cursor: pointer; border: 2px solid transparent; border-radius: 6px;
+    overflow: hidden; background: var(--panel2); position: relative; }
+  .foto img { width: 100%; height: 100px; object-fit: cover; display: block; }
+  .foto span { display: block; font-size: 10px; padding: 3px 5px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foto.sel { border-color: var(--accent); }
+  .foto.noreg::after { content: "no registrada"; position: absolute; top: 4px; left: 4px; background: var(--warn);
+    color: #000; font-size: 9px; padding: 1px 5px; border-radius: 4px; }
+  #grande { position: absolute; inset: 0; background: rgba(0,0,0,.85); display: none; place-items: center; cursor: zoom-out; }
+  #grande img { max-width: 95%; max-height: 95%; }
+  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+    aside { grid-row: auto; max-height: 40vh; } #tira { grid-column: 1; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1 id="titulo">Visor de fotogrametría</h1>
+    <div class="sub" id="subtitulo">cargando…</div>
+    <div id="pasos"></div>
+    <div id="info"></div>
+  </aside>
+  <div id="vista">
+    <div id="estado">Iniciando…</div>
+    <div id="controles">
+      <button id="btnCams" class="on">Cámaras</button>
+      <button id="btnWire">Alambre</button>
+      <button id="btnFit">Centrar</button>
+    </div>
+    <div id="ayuda">Arrastrar: rotar · Rueda: zoom · Botón derecho: desplazar · Clic en una cámara: ver su foto</div>
+    <div id="grande"><img alt=""></div>
+  </div>
+  <div id="tira"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+
+const sesion = new URLSearchParams(location.search).get('sesion') || 'sceaux';
+const $ = (s) => document.querySelector(s);
+const estado = (t) => { $('#estado').textContent = t; };
+
+// ---------- escena ----------
+const vista = $('#vista');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+vista.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1115);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 5000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404060, 1.1));
+const sol = new THREE.DirectionalLight(0xffffff, 1.2); sol.position.set(1, 2, 1.5); scene.add(sol);
+
+// COLMAP usa Y hacia abajo y Z hacia adelante. Giramos 180° en X para ver la escena "de pie".
+const mundo = new THREE.Group(); mundo.rotation.x = Math.PI; scene.add(mundo);
+const capaDatos = new THREE.Group(); mundo.add(capaDatos);
+const capaCams = new THREE.Group(); mundo.add(capaCams);
+
+function resize() {
+  const w = vista.clientWidth, h = vista.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(vista); resize();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+let cajaEscena = null; // caja robusta de la escena (manifest), en coordenadas del visor
+function encuadrar(obj) {
+  scene.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(obj);
+  // Las nubes de puntos traen puntos lejanos mal triangulados; usamos la caja robusta en ese caso.
+  const esNube = obj.children.some(o => o.isPoints) || obj === capaCams;
+  if (cajaEscena && (esNube || box.isEmpty())) box = cajaEscena.clone();
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3()), tam = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(0.6, 0.45, 1).normalize().multiplyScalar(tam * 0.9));
+  camera.near = tam / 1000; camera.far = tam * 20; camera.updateProjectionMatrix();
+}
+
+// ---------- datos ----------
+const man = await (await fetch(`/outputs/${sesion}/visor/manifest.json`)).json();
+$('#titulo').textContent = `Sesión: ${man.sesion}`;
+$('#subtitulo').textContent = `${man.estadisticas.fotos} fotos · ${man.estadisticas.registradas} registradas · ${man.meta.calidad || ''}`;
+
+const tam = new THREE.Vector3().fromArray(man.bbox.max).sub(new THREE.Vector3().fromArray(man.bbox.min)).length() || 1;
+scene.updateMatrixWorld(true);
+cajaEscena = new THREE.Box3(new THREE.Vector3().fromArray(man.bbox.min), new THREE.Vector3().fromArray(man.bbox.max)).applyMatrix4(mundo.matrixWorld);
+const tiempo = (prefijo) => { const t = man.tiempos.find(x => x.etapa.startsWith(prefijo)); return t ? `${t.segundos} s` : '–'; };
+const mb = (a) => a ? `${a.mb} MB` : 'no generado';
+const e = man.estadisticas;
+
+const PASOS = [
+  { id: 'fotos', titulo: 'Fotografías', corto: `${e.fotos} imágenes de entrada`,
+    texto: 'Las fotos originales. El pipeline busca puntos característicos (SIFT) en cada una y los empareja entre pares de fotos. Las que no comparten suficientes puntos con las demás quedan "no registradas".',
+    filas: [['Fotos', e.fotos], ['Extracción de puntos', tiempo('1.')], ['Emparejamiento', tiempo('2.')]],
+    carga: null, tira: true },
+  { id: 'disperso', titulo: 'Cámaras y nube dispersa', corto: `${e.puntos_dispersos.toLocaleString('es')} puntos · ${e.registradas} cámaras`,
+    texto: 'Structure from Motion: a partir de los emparejamientos, COLMAP calcula desde dónde se tomó cada foto (pirámides) y triangula los puntos que ve en varias fotos. Es el esqueleto geométrico; aún no hay superficie.',
+    filas: [['Cámaras registradas', `${e.registradas} / ${e.fotos}`], ['Puntos 3D', e.puntos_dispersos.toLocaleString('es')], ['Error de reproyección', `${e.error_reproyeccion_px} px`], ['Tiempo mapper', tiempo('3.')], ['Archivo', mb(man.archivos.nube_dispersa)]],
+    carga: () => cargarPly(man.archivos.nube_dispersa, 'puntos', tam / 250), tira: true },
+  { id: 'denso', titulo: 'Nube densa', corto: mb(man.archivos.nube_densa),
+    texto: 'Multi-View Stereo: con las cámaras ya conocidas, OpenMVS calcula un mapa de profundidad por foto y los fusiona. El resultado es una nube con millones de puntos de color, mucho más completa que la dispersa.',
+    filas: [['Tiempo densificación', tiempo('6.')], ['Archivo', mb(man.archivos.nube_densa)]],
+    carga: () => cargarPly(man.archivos.nube_densa, 'puntos', tam / 600) },
+  { id: 'malla', titulo: 'Malla', corto: mb(man.archivos.malla),
+    texto: 'La nube densa se convierte en una superficie de triángulos (malla). Aquí aparecen huecos donde no había puntos y superficies "infladas" en zonas con pocas fotos. Activa "Alambre" para ver los triángulos.',
+    filas: [['Tiempo reconstrucción', tiempo('7.')], ['Archivo', mb(man.archivos.malla)]],
+    carga: () => cargarPly(man.archivos.malla, 'malla') },
+  { id: 'refinada', titulo: 'Malla refinada', corto: mb(man.archivos.malla_refinada),
+    texto: 'La malla se ajusta comparando cómo se ve proyectada en cada foto, recuperando detalle fino y suavizando ruido. Es la etapa más lenta.',
+    filas: [['Tiempo refinado', tiempo('8.')], ['Archivo', mb(man.archivos.malla_refinada)]],
+    carga: () => cargarPly(man.archivos.malla_refinada, 'malla') },
+  { id: 'textura', titulo: 'Modelo con textura', corto: mb(man.archivos.obj),
+    texto: 'Resultado final: a cada triángulo se le asigna la foto que mejor lo ve y se compone un atlas de textura. Este es el modelo .obj que se puede abrir en cualquier software 3D.',
+    filas: [['Tiempo texturizado', tiempo('9.')], ['Modelo .obj', mb(man.archivos.obj)], ['Textura', mb(man.archivos.textura)], ['Total pipeline', man.meta.tiempo_total_min ? `${man.meta.tiempo_total_min} min` : '–']],
+    carga: () => cargarObj(man.archivos.obj, man.archivos.mtl) },
+];
+
+// ---------- cámaras (frustums) ----------
+const frustums = new Map();
+function construirCamaras() {
+  const d = tam * 0.06;
+  for (const c of man.camaras) {
+    const C = new THREE.Vector3().fromArray(c.centro);
+    const X = new THREE.Vector3().fromArray(c.ejeX), Y = new THREE.Vector3().fromArray(c.ejeY), Z = new THREE.Vector3().fromArray(c.ejeZ);
+    const esquina = (sx, sy) => C.clone().add(Z.clone().multiplyScalar(d)).add(X.clone().multiplyScalar(sx * c.ancho / 2 * d)).add(Y.clone().multiplyScalar(sy * c.alto / 2 * d));
+    const p = [esquina(-1, -1), esquina(1, -1), esquina(1, 1), esquina(-1, 1)];
+    const pts = [C, p[0], C, p[1], C, p[2], C, p[3], p[0], p[1], p[1], p[2], p[2], p[3], p[3], p[0]];
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x4fa3ff }));
+    line.userData.nombre = c.nombre;
+    // plano invisible para poder hacer clic
+    const plano = new THREE.Mesh(new THREE.BufferGeometry().setFromPoints([p[0], p[1], p[2], p[0], p[2], p[3]]),
+      new THREE.MeshBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false }));
+    plano.userData.nombre = c.nombre;
+    capaCams.add(line, plano); frustums.set(c.nombre, line);
+  }
+}
+construirCamaras();
+function resaltarCamara(nombre) {
+  for (const [n, l] of frustums) { l.material.color.set(n === nombre ? 0xffb648 : 0x4fa3ff); l.material.linewidth = 1; }
+  document.querySelectorAll('.foto').forEach(f => f.classList.toggle('sel', f.dataset.nombre === nombre));
+  const sel = document.querySelector('.foto.sel'); if (sel) sel.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+}
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+renderer.domElement.addEventListener('click', (ev) => {
+  if (!capaCams.visible) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(capaCams.children.filter(o => o.isMesh), false)[0];
+  if (hit) resaltarCamara(hit.object.userData.nombre);
+});
+
+// ---------- carga de geometría ----------
+const cache = new Map();
+function limpiar() { while (capaDatos.children.length) capaDatos.remove(capaDatos.children[0]); }
+async function cargarPly(arch, tipo, tamPunto) {
+  if (!arch) { estado('Este archivo no se generó en esta sesión.'); return; }
+  const key = arch.url;
+  if (!cache.has(key)) {
+    const geo = await new Promise((ok, err) => new PLYLoader().load(arch.url, ok,
+      (xhr) => estado(`Cargando ${arch.url.split('/').pop()} … ${xhr.total ? Math.round(100 * xhr.loaded / xhr.total) + ' %' : Math.round(xhr.loaded / 1e6) + ' MB'}`), err));
+    const tieneColor = !!geo.getAttribute('color');
+    let obj;
+    if (tipo === 'puntos') {
+      obj = new THREE.Points(geo, new THREE.PointsMaterial({ size: 1, vertexColors: tieneColor, color: tieneColor ? 0xffffff : 0xbbc4d4, sizeAttenuation: true }));
+      obj.userData.n = `${geo.getAttribute('position').count.toLocaleString('es')} puntos`;
+    } else {
+      geo.computeVertexNormals();
+      obj = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: tieneColor, color: tieneColor ? 0xffffff : 0xb9bfc9, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, flatShading: !tieneColor }));
+      obj.userData.n = `${(geo.index ? geo.index.count / 3 : geo.getAttribute('position').count / 3).toLocaleString('es')} triángulos`;
+    }
+    cache.set(key, obj);
+  }
+  const obj = cache.get(key);
+  if (obj.isPoints) obj.material.size = tamPunto;
+  limpiar(); capaDatos.add(obj); aplicarAlambre(); estado(obj.userData.n);
+}
+async function cargarObj(obj, mtl) {
+  if (!obj) { estado('No hay modelo texturizado.'); return; }
+  if (!cache.has(obj.url)) {
+    const base = obj.url.substring(0, obj.url.lastIndexOf('/') + 1);
+    const materiales = await new Promise((ok, err) => new MTLLoader().setResourcePath(base).setPath(base).load(mtl.url.split('/').pop(), ok, undefined, err));
+    materiales.preload();
+    const modelo = await new Promise((ok, err) => new OBJLoader().setMaterials(materiales).load(obj.url, ok,
+      (xhr) => estado(`Cargando modelo … ${Math.round(xhr.loaded / 1e6)} MB`), err));
+    let tri = 0; modelo.traverse(o => { if (o.isMesh) {
+      // El .mtl de OpenMVS trae "Tr 1", que MTLLoader interpreta como transparencia total.
+      for (const m of [].concat(o.material)) {
+        m.side = THREE.DoubleSide; m.transparent = false; m.opacity = 1;
+        if (m.map) { m.map.colorSpace = THREE.SRGBColorSpace; m.map.needsUpdate = true; }
+        m.needsUpdate = true;
+      }
+      tri += (o.geometry.index ? o.geometry.index.count : o.geometry.getAttribute('position').count) / 3; } });
+    modelo.userData.n = `${Math.round(tri).toLocaleString('es')} triángulos con textura`;
+    cache.set(obj.url, modelo);
+  }
+  const m = cache.get(obj.url); limpiar(); capaDatos.add(m); aplicarAlambre(); estado(m.userData.n);
+}
+let alambre = false;
+function aplicarAlambre() { capaDatos.traverse(o => { if (o.isMesh) o.material.wireframe = alambre; }); }
+
+// ---------- UI ----------
+const pasosEl = $('#pasos');
+PASOS.forEach((p, i) => {
+  const div = document.createElement('div');
+  const dispo = p.id === 'fotos' || (p.carga && (p.id === 'textura' ? man.archivos.obj : man.archivos[{ disperso: 'nube_dispersa', denso: 'nube_densa', malla: 'malla', refinada: 'malla_refinada' }[p.id]]));
+  div.className = 'paso' + (dispo ? '' : ' deshabilitado');
+  div.innerHTML = `<div class="num">${i + 1}</div><div><b>${p.titulo}</b><small>${p.corto}</small></div>`;
+  if (dispo) div.onclick = () => irA(i);
+  pasosEl.appendChild(div);
+});
+const tira = $('#tira');
+function pintarTira() {
+  tira.innerHTML = '';
+  for (const f of man.fotos) {
+    const d = document.createElement('div');
+    d.className = 'foto' + (f.registrada ? '' : ' noreg'); d.dataset.nombre = f.nombre;
+    d.innerHTML = `<img src="${f.miniatura}" loading="lazy" alt=""><span>${f.nombre}</span>`;
+    d.onclick = () => { resaltarCamara(f.nombre); };
+    d.ondblclick = () => { $('#grande img').src = f.original; $('#grande').style.display = 'grid'; };
+    tira.appendChild(d);
+  }
+}
+$('#grande').onclick = () => { $('#grande').style.display = 'none'; };
+
+async function irA(i) {
+  const p = PASOS[i];
+  document.querySelectorAll('.paso').forEach((d, j) => d.classList.toggle('activo', j === i));
+  $('#info').innerHTML = `<h2>${i + 1}. ${p.titulo}</h2><p>${p.texto}</p><table>${p.filas.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+  if (p.tira) pintarTira(); else tira.innerHTML = '';
+  capaCams.visible = $('#btnCams').classList.contains('on');
+  try {
+    if (p.carga) await p.carga(); else { limpiar(); estado(`${man.fotos.length} fotos. Doble clic en una miniatura para verla en grande.`); }
+  } catch (err) { estado('Error al cargar: ' + err.message); console.error(err); }
+  encuadrar(capaDatos.children.length ? capaDatos : capaCams);
+}
+$('#btnCams').onclick = (ev) => { ev.target.classList.toggle('on'); capaCams.visible = ev.target.classList.contains('on'); };
+$('#btnWire').onclick = (ev) => { alambre = !alambre; ev.target.classList.toggle('on', alambre); aplicarAlambre(); };
+$('#btnFit').onclick = () => encuadrar(capaDatos.children.length ? capaDatos : capaCams);
+
+// ?paso=1..6 abre el visor directamente en esa etapa (por defecto, cámaras y nube dispersa).
+const pasoInicial = Math.min(PASOS.length, Math.max(1, parseInt(new URLSearchParams(location.search).get('paso') || '2', 10)));
+irA(pasoInicial - 1);
+</script>
+</body>
+</html>
